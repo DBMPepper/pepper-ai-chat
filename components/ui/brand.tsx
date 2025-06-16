@@ -3,7 +3,7 @@
 import Link from "next/link"
 import { FC } from "react"
 import { ChatbotUISVG } from "../icons/chatbotui-svg"
-import { PepperAISVG } from "../icons/pepperai-svg"
+// import { PepperAISVG } from "../icons/pepperai-svg"
 
 interface BrandProps {
   theme?: "dark" | "light"
