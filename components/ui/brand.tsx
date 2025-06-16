@@ -3,6 +3,7 @@
 import Link from "next/link"
 import { FC } from "react"
 import { ChatbotUISVG } from "../icons/chatbotui-svg"
+import { PepperAISVG } from "../icons/pepperai-svg"
 
 interface BrandProps {
   theme?: "dark" | "light"
@@ -17,10 +18,14 @@ export const Brand: FC<BrandProps> = ({ theme = "dark" }) => {
       rel="noopener noreferrer"
     >
       <div className="mb-2">
-        <ChatbotUISVG theme={theme === "dark" ? "dark" : "light"} scale={0.3} />
+        <img
+          src="/Pepper Infinity Logo.png"
+          alt="Pepper AI Logo"
+          style={{ width: 120, height: 120, objectFit: "contain" }}
+        />
       </div>
 
-      <div className="text-4xl font-bold tracking-wide">Chatbot UI</div>
+      <div className="text-4xl font-bold tracking-wide">Pepper AI</div>
     </Link>
   )
 }
