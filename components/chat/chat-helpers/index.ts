@@ -199,7 +199,9 @@ export const handleHostedChat = async (
   setIsGenerating: React.Dispatch<React.SetStateAction<boolean>>,
   setFirstTokenReceived: React.Dispatch<React.SetStateAction<boolean>>,
   setChatMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>,
-  setToolInUse: React.Dispatch<React.SetStateAction<string>>
+  setToolInUse: React.Dispatch<React.SetStateAction<string>>,
+  selectedChat: Tables<"chats"> | null,
+  currentChat: Tables<"chats"> | null
 ) => {
   const provider =
     modelData.provider === "openai" && profile.use_azure_openai
@@ -224,7 +226,15 @@ export const handleHostedChat = async (
   const requestBody = {
     chatSettings: payload.chatSettings,
     messages: formattedMessages,
-    customModelId: provider === "custom" ? modelData.hostedId : ""
+    customModelId: provider === "custom" ? modelData.hostedId : "",
+    userId: profile.user_id,
+    chatId: selectedChat?.id || currentChat?.id
+  }
+
+  if (!requestBody.chatId) {
+    throw new Error(
+      "No chatId available. Chat must be created before sending messages."
+    )
   }
 
   const response = await fetchChatResponse(

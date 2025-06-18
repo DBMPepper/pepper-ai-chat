@@ -88,7 +88,7 @@ const CLAUDE_3_OPUS: LLM = {
 // Claude 3.5 Sonnet (UPDATED 06/20/24)
 const CLAUDE_3_5_SONNET: LLM = {
   modelId: "claude-3-5-sonnet-20240620",
-  modelName: "Claude 3.5 Sonnet",
+  modelName: "Pepper AI",
   provider: "anthropic",
   hostedId: "claude-3-5-sonnet-20240620",
   platformLink: ANTHROPIC_PLATFORM_LINK,

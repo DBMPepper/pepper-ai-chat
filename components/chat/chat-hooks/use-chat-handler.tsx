@@ -229,6 +229,33 @@ export const useChatHandler = () => {
 
       let currentChat = selectedChat ? { ...selectedChat } : null
 
+      // If no chat exists, create one first
+      if (!currentChat) {
+        currentChat = await handleCreateChat(
+          chatSettings!,
+          profile!,
+          selectedWorkspace!,
+          messageContent,
+          selectedAssistant!,
+          newMessageFiles,
+          setSelectedChat,
+          setChats,
+          setChatFiles
+        )
+      } else {
+        const updatedChat = await updateChat(currentChat.id, {
+          updated_at: new Date().toISOString()
+        })
+
+        setChats(prevChats => {
+          const updatedChats = prevChats.map(prevChat =>
+            prevChat.id === updatedChat.id ? updatedChat : prevChat
+          )
+
+          return updatedChats
+        })
+      }
+
       const b64Images = newMessageImages.map(image => image.base64)
 
       let retrievedFileItems: Tables<"file_items">[] = []
@@ -265,7 +292,7 @@ export const useChatHandler = () => {
         chatMessages: isRegeneration
           ? [...chatMessages]
           : [...chatMessages, tempUserChatMessage],
-        assistant: selectedChat?.assistant_id ? selectedAssistant : null,
+        assistant: currentChat?.assistant_id ? selectedAssistant : null,
         messageFileItems: retrievedFileItems,
         chatFileItems: chatFileItems
       }
@@ -333,35 +360,11 @@ export const useChatHandler = () => {
             setIsGenerating,
             setFirstTokenReceived,
             setChatMessages,
-            setToolInUse
+            setToolInUse,
+            currentChat, // always pass a real chat object
+            currentChat
           )
         }
-      }
-
-      if (!currentChat) {
-        currentChat = await handleCreateChat(
-          chatSettings!,
-          profile!,
-          selectedWorkspace!,
-          messageContent,
-          selectedAssistant!,
-          newMessageFiles,
-          setSelectedChat,
-          setChats,
-          setChatFiles
-        )
-      } else {
-        const updatedChat = await updateChat(currentChat.id, {
-          updated_at: new Date().toISOString()
-        })
-
-        setChats(prevChats => {
-          const updatedChats = prevChats.map(prevChat =>
-            prevChat.id === updatedChat.id ? updatedChat : prevChat
-          )
-
-          return updatedChats
-        })
       }
 
       await handleCreateMessages(

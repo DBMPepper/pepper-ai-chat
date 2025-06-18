@@ -1,111 +1,213 @@
-import { CHAT_SETTING_LIMITS } from "@/lib/chat-setting-limits"
-import { checkApiKey, getServerProfile } from "@/lib/server/server-chat-helpers"
-import { getBase64FromDataURL, getMediaTypeFromDataURL } from "@/lib/utils"
-import { ChatSettings } from "@/types"
-import Anthropic from "@anthropic-ai/sdk"
-import { AnthropicStream, StreamingTextResponse } from "ai"
 import { NextRequest, NextResponse } from "next/server"
-
-export const runtime = "edge"
+import { conversationManager } from "@/lib/services/anthropic-conversation-manager"
 
 export async function POST(request: NextRequest) {
-  const json = await request.json()
-  const { chatSettings, messages } = json as {
-    chatSettings: ChatSettings
-    messages: any[]
-  }
-
   try {
-    const profile = await getServerProfile()
+    const json = await request.json()
+    const {
+      chatId,
+      messages,
+      model = "claude-3-5-sonnet-20240620",
+      temperature = 0.5,
+      max_tokens = 4096,
+      system, // System prompt if provided
+      stream = true,
+      userId
+    } = json
 
-    checkApiKey(profile.anthropic_api_key, "Anthropic")
+    // Robust userId fallback
+    let userIdentifier = userId
+    if (!userIdentifier) {
+      const authorization = request.headers.get("authorization")
+      if (authorization) {
+        userIdentifier = authorization.replace("Bearer ", "").slice(0, 20)
+      }
+      if (!userIdentifier) {
+        userIdentifier =
+          request.headers.get("x-session-id") ||
+          request.headers.get("x-forwarded-for") ||
+          "anonymous"
+      }
+    }
 
-    let ANTHROPIC_FORMATTED_MESSAGES: any = messages.slice(1)
+    // Validate required fields
+    if (!chatId) {
+      return NextResponse.json({ error: "chatId is required" }, { status: 400 })
+    }
+    if (!messages || !Array.isArray(messages) || messages.length === 0) {
+      return NextResponse.json(
+        { error: "No messages provided" },
+        { status: 400 }
+      )
+    }
 
-    ANTHROPIC_FORMATTED_MESSAGES = ANTHROPIC_FORMATTED_MESSAGES?.map(
-      (message: any) => {
-        const messageContent =
-          typeof message?.content === "string"
-            ? [message.content]
-            : message?.content
+    // Set system prompt if provided (from field or first message)
+    let systemPrompt = system
+    if (!systemPrompt && messages[0]?.role === "system") {
+      systemPrompt = messages[0].content
+    }
+    if (systemPrompt) {
+      conversationManager.setSystemPrompt(chatId, systemPrompt)
+    }
 
-        return {
-          ...message,
-          content: messageContent.map((content: any) => {
-            if (typeof content === "string") {
-              // Handle the case where content is a string
-              return { type: "text", text: content }
-            } else if (
-              content?.type === "image_url" &&
-              content?.image_url?.url?.length
-            ) {
-              return {
-                type: "image",
-                source: {
-                  type: "base64",
-                  media_type: getMediaTypeFromDataURL(content.image_url.url),
-                  data: getBase64FromDataURL(content.image_url.url)
-                }
-              }
-            } else {
-              return content
-            }
-          })
-        }
+    // Get the latest user message
+    const latestMessage = messages[messages.length - 1]
+    // Prepare messages with optimization
+    const {
+      messages: optimizedMessages,
+      includeSystem,
+      estimatedTokens,
+      systemPrompt: preparedSystemPrompt
+    } = conversationManager.prepareApiMessages(chatId, userIdentifier, {
+      id: crypto.randomUUID(),
+      role: latestMessage.role,
+      content: latestMessage.content,
+      createdAt: new Date()
+    })
+
+    // Build Anthropic API request
+    const anthropicRequest: any = {
+      model,
+      messages: optimizedMessages,
+      temperature,
+      max_tokens,
+      stream
+    }
+    if (includeSystem && preparedSystemPrompt) {
+      console.log("Setting system prompt  ===>")
+      anthropicRequest.system = preparedSystemPrompt
+    }
+
+    // Make request to Anthropic
+    const anthropicResponse = await fetch(
+      "https://api.anthropic.com/v1/messages",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": process.env.ANTHROPIC_API_KEY!,
+          "anthropic-version": "2023-06-01"
+        },
+        body: JSON.stringify(anthropicRequest)
       }
     )
 
-    const anthropic = new Anthropic({
-      apiKey: profile.anthropic_api_key || ""
-    })
-
-    try {
-      const response = await anthropic.messages.create({
-        model: chatSettings.model,
-        messages: ANTHROPIC_FORMATTED_MESSAGES,
-        temperature: chatSettings.temperature,
-        system: messages[0].content,
-        max_tokens:
-          CHAT_SETTING_LIMITS[chatSettings.model].MAX_TOKEN_OUTPUT_LENGTH,
-        stream: true
-      })
-
-      try {
-        const stream = AnthropicStream(response)
-        return new StreamingTextResponse(stream)
-      } catch (error: any) {
-        console.error("Error parsing Anthropic API response:", error)
-        return new NextResponse(
-          JSON.stringify({
-            message:
-              "An error occurred while parsing the Anthropic API response"
-          }),
-          { status: 500 }
-        )
-      }
-    } catch (error: any) {
-      console.error("Error calling Anthropic API:", error)
-      return new NextResponse(
-        JSON.stringify({
-          message: "An error occurred while calling the Anthropic API"
-        }),
-        { status: 500 }
+    if (!anthropicResponse.ok) {
+      const error = await anthropicResponse.text()
+      return NextResponse.json(
+        { error: `Anthropic API error: ${error}` },
+        { status: anthropicResponse.status }
       )
     }
-  } catch (error: any) {
-    let errorMessage = error.message || "An unexpected error occurred"
-    const errorCode = error.status || 500
 
-    if (errorMessage.toLowerCase().includes("api key not found")) {
-      errorMessage =
-        "Anthropic API Key not found. Please set it in your profile settings."
-    } else if (errorCode === 401) {
-      errorMessage =
-        "Anthropic API Key is incorrect. Please fix it in your profile settings."
+    // Streaming response
+    if (stream) {
+      const encoder = new TextEncoder()
+      const decoder = new TextDecoder()
+      let assistantMessage = ""
+      let totalOutputTokens = 0
+      const transformStream = new TransformStream({
+        async transform(chunk, controller) {
+          controller.enqueue(chunk)
+          const text = decoder.decode(chunk, { stream: true })
+          const lines = text.split("\n")
+          for (const line of lines) {
+            if (line.startsWith("data: ")) {
+              const data = line.slice(6)
+              if (data === "[DONE]") continue
+              try {
+                const parsed = JSON.parse(data)
+                if (
+                  parsed.type === "content_block_delta" &&
+                  parsed.delta?.text
+                ) {
+                  assistantMessage += parsed.delta.text
+                  totalOutputTokens = Math.ceil(assistantMessage.length / 4)
+                }
+              } catch (e) {}
+            }
+          }
+        },
+        async flush(controller) {
+          if (assistantMessage) {
+            conversationManager.updateSessionAfterResponse(
+              chatId,
+              userIdentifier,
+              {
+                id: crypto.randomUUID(),
+                role: "assistant",
+                content: assistantMessage,
+                createdAt: new Date()
+              },
+              {
+                input_tokens: estimatedTokens,
+                output_tokens: totalOutputTokens
+              },
+              model
+            )
+            const stats = conversationManager.getSessionStats(
+              chatId,
+              userIdentifier
+            )
+            if (stats) {
+              const statsEvent = encoder.encode(
+                `data: ${JSON.stringify({ type: "session_stats", stats })}\n\n`
+              )
+              controller.enqueue(statsEvent)
+            }
+          }
+        }
+      })
+      return new Response(
+        anthropicResponse.body!.pipeThrough(transformStream),
+        {
+          headers: {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            Connection: "keep-alive"
+          }
+        }
+      )
+    } else {
+      // Non-streaming response
+      const data = await anthropicResponse.json()
+      if (data.content && data.content[0]) {
+        conversationManager.updateSessionAfterResponse(
+          chatId,
+          userIdentifier,
+          {
+            id: crypto.randomUUID(),
+            role: "assistant",
+            content: data.content[0].text,
+            createdAt: new Date()
+          },
+          {
+            input_tokens: estimatedTokens,
+            output_tokens: Math.ceil(data.content[0].text.length / 4)
+          },
+          model
+        )
+      }
+      const stats = conversationManager.getSessionStats(chatId, userIdentifier)
+      return NextResponse.json({ ...data, sessionStats: stats })
     }
-
-    return new NextResponse(JSON.stringify({ message: errorMessage }), {
-      status: errorCode
-    })
+  } catch (error: any) {
+    return NextResponse.json(
+      { error: "Internal server error", details: error.message },
+      { status: 500 }
+    )
   }
+}
+
+// GET endpoint for session stats
+export async function GET(request: NextRequest) {
+  const searchParams = request.nextUrl.searchParams
+  const chatId = searchParams.get("chatId")
+  const userId = searchParams.get("userId") || "anonymous"
+  if (!chatId) {
+    return NextResponse.json({ error: "chatId is required" }, { status: 400 })
+  }
+  const stats = conversationManager.getSessionStats(chatId, userId)
+  const sessionCount = conversationManager.getActiveSessionCount()
+  return NextResponse.json({ stats, activeSessionsTotal: sessionCount })
 }
